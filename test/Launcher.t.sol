@@ -62,6 +62,48 @@ contract LauncherTest is KilnBase {
         fresh.open(goodSalt, Q96);
     }
 
+    /// A stranger may initialize the pool key for the predicted, still codeless Kiln address
+    /// before open(). open() must adopt that pool rather than burn the salt, and because the
+    /// pool is empty any wallet can move its price with a swap before liquidity is funded.
+    function testPreInitializedPoolIsAdoptedAndRepriceable() public {
+        Launcher fresh = new Launcher(address(token), address(nft), address(manager));
+        bytes32 goodSalt = _mine(fresh);
+        address predicted = _predict(address(fresh), goodSalt, fresh.initCodeHash());
+        assertEq(predicted.code.length, 0);
+        PoolKey memory strangerKey = key;
+        strangerKey.hooks = IHooks(predicted);
+        address stranger = makeAddr("stranger");
+        vm.prank(stranger);
+        manager.initialize(strangerKey, TickMath.MIN_SQRT_PRICE + 1);
+
+        vm.expectEmit(true, true, false, true, address(fresh));
+        emit Launcher.Opened(predicted, strangerKey.toId());
+        Kiln adopted = fresh.open(goodSalt, Q96);
+        assertEq(address(adopted), predicted);
+        assertEq(address(fresh.kiln()), predicted);
+        (uint160 price,,,) = manager.getSlot0(strangerKey.toId());
+        assertEq(price, TickMath.MIN_SQRT_PRICE + 1);
+        vm.expectRevert(Launcher.AlreadyOpened.selector);
+        fresh.open(goodSalt, Q96);
+
+        // Recovery: a zero-piece wallet moves the empty pool to the intended price with a
+        // ZTO-in exact-output swap (no specified cut, zero fill, zero deltas), then the
+        // reverse direction with ETH-in exact-input.
+        vm.prank(trader, trader);
+        BalanceDelta up =
+            swapRouter.swap(strangerKey, SwapParams(false, 1, Q96), PoolSwapTest.TestSettings(false, false), "");
+        assertEq(up.amount0(), 0);
+        assertEq(up.amount1(), 0);
+        (price,,,) = manager.getSlot0(strangerKey.toId());
+        assertEq(price, Q96);
+        assertEq(adopted.claims(), 0);
+        vm.prank(trader, trader);
+        swapRouter.swap(strangerKey, SwapParams(true, -1, Q96 / 2), PoolSwapTest.TestSettings(false, false), "");
+        (price,,,) = manager.getSlot0(strangerKey.toId());
+        assertEq(price, Q96 / 2);
+        assertEq(adopted.claims(), 0);
+    }
+
     function testConstructorsWorkWithoutDependencyCodeAndDoNotValidateKilnBits() public {
         address ztoAddress = 0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14;
         address pepeoAddress = address(bytes20(hex"0ce3157eac34eccdcff239738983976fabdefb2a"));

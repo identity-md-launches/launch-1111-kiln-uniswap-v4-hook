@@ -67,6 +67,32 @@ contract PiecesTest is KilnBase {
         assertEq(kiln.inventory().length, 0);
     }
 
+    function testBuyAtZeroAskRevertsUntilReserveIsSeeded() public {
+        nft.mint(trader, 7);
+        kiln.seed(50);
+        assertEq(kiln.bid(), 1);
+        vm.prank(trader);
+        kiln.sell(7);
+        assertEq(kiln.reserve(), 49);
+        assertEq(kiln.bid(), 0);
+        assertEq(kiln.ask(), 0);
+        address stranger = makeAddr("stranger");
+        vm.prank(stranger);
+        vm.expectRevert(Kiln.ZeroBid.selector);
+        kiln.buy(7);
+        assertEq(nft.ownerOf(7), address(kiln));
+        assertTrue(kiln.inInventory(7));
+        kiln.seed(1);
+        assertEq(kiln.ask(), 1);
+        vm.prank(stranger);
+        vm.expectRevert();
+        kiln.buy(7);
+        kiln.buy(7);
+        assertEq(nft.ownerOf(7), address(this));
+        assertEq(kiln.reserve(), 51);
+        _assertBacking();
+    }
+
     function testPlainNFTAndZTODonationsAreNotInventoryOrReserve() public {
         nft.mint(trader, 1);
         vm.prank(trader);

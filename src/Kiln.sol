@@ -204,6 +204,8 @@ contract Kiln is IUnlockCallback {
         uint256 index = _index[id];
         if (index == 0) revert NotInInventory();
         uint256 price = ask();
+        // ask() is zero exactly when bid() is zero (reserve below depth): mirror sell().
+        if (price == 0) revert ZeroBid();
         uint256 lastId = _inventory[_inventory.length - 1];
         _inventory[index - 1] = lastId;
         _index[lastId] = index;
