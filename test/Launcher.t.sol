@@ -30,6 +30,40 @@ contract LauncherTest is KilnBase {
         launcher.open(salt, Q96);
     }
 
+    function testSupersetAndMissingHookPermissionsAreRejected() public {
+        Launcher fresh = new Launcher(address(token), address(nft), address(manager));
+        bytes32 hash = fresh.initCodeHash();
+        // Before-initialize is an unwanted extra permission; after-swap is a required permission.
+        uint160[2] memory masks = [uint160(0x20cc), uint160(0x008c)];
+        for (uint256 mask; mask < masks.length; ++mask) {
+            uint256 nonce;
+            address predicted = _predict(address(fresh), bytes32(nonce), hash);
+            while ((uint160(predicted) & 0x3fff) != masks[mask]) {
+                predicted = _predict(address(fresh), bytes32(++nonce), hash);
+            }
+            vm.prank(trader);
+            vm.expectRevert(abi.encodeWithSelector(Launcher.InvalidHookAddress.selector, predicted));
+            fresh.open(bytes32(nonce), Q96);
+            assertEq(predicted.code.length, 0);
+            assertEq(address(fresh.kiln()), address(0));
+        }
+        // Both failures must leave the one-time open available.
+        fresh.open(_mine(fresh), Q96);
+        assertTrue(address(fresh.kiln()) != address(0));
+    }
+
+    function testBothConstructorsRejectEachMissingDependency() public {
+        for (uint256 missing; missing < 3; ++missing) {
+            address ztoAddress = missing == 0 ? address(0) : address(token);
+            address pepeoAddress = missing == 1 ? address(0) : address(nft);
+            address managerAddress = missing == 2 ? address(0) : address(manager);
+            vm.expectRevert(Launcher.InvalidAddress.selector);
+            new Launcher(ztoAddress, pepeoAddress, managerAddress);
+            vm.expectRevert(Kiln.InvalidAddress.selector);
+            new Kiln(ztoAddress, pepeoAddress, managerAddress);
+        }
+    }
+
     function testBadBitsRollBackDeploymentAndAllowRetry() public {
         Launcher fresh = new Launcher(address(token), address(nft), address(manager));
         bytes32 hash = fresh.initCodeHash();
