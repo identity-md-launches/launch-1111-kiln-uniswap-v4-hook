@@ -1,0 +1,14 @@
+{
+  "kind": "evm_contracts",
+  "contracts": [
+    {
+      "contract": "Launcher",
+      "constructorArgs": [
+        "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14",
+        "0x0cE3157eAC34ECCdcFF239738983976faBdEFB2A",
+        "0xE03A1074c86CFeDd5C142C4F04F1a1536e203543"
+      ]
+    }
+  ],
+  "notes": "Sepolia rehearsal (chain ID 11155111). Launcher constructor arguments are ZTO (Sepolia WETH used as a plain 18-decimal ERC-20), Pepeolithic, and the Uniswap v4 PoolManager, in that order. Launcher is the sole initial deployment. Its permissionless, one-time open(salt, sqrtPriceX96) creates Kiln with CREATE2 using the same three addresses, verifies exactly the four swap hook permission bits, and initializes the native ETH/ZTO pool. The salt is mined using the deployed Launcher address and initCodeHash(); the opening price is supplied when open is called. These later actions are outside this manifest. Liquidity is added separately through the normal PositionManager. Neither application has an owner, administrator, upgrade, pause, or reserve withdrawal. All fee tiers and pool and market parameters are code constants. Kiln collects ZTO fees as claims redeemable into its piece reserve; reserve payouts only purchase pieces from sellers. Pass eligibility uses tx.origin and only requires holding the NFTs during the swap. NFTs transferred directly without sell() are not inventory and remain stuck."
+}
