@@ -3,6 +3,8 @@ pragma solidity 0.8.26;
 
 import "./KilnBase.sol";
 import {MineSalt} from "../script/MineSalt.s.sol";
+import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
+import {CustomRevert} from "@uniswap/v4-core/src/libraries/CustomRevert.sol";
 
 contract LauncherTest is KilnBase {
     using PoolIdLibrary for PoolKey;
@@ -136,6 +138,93 @@ contract LauncherTest is KilnBase {
         (price,,,) = manager.getSlot0(strangerKey.toId());
         assertEq(price, Q96 / 2);
         assertEq(adopted.claims(), 0);
+    }
+
+    /// A stranger who pre-initializes at a wrong price and funds the pool cannot block open(),
+    /// but the supplied price is ignored and the adopted pool trades at the stranger's price.
+    function testAdoptedPoolWithStrangerLiquidityKeepsStrangerPriceAndStillChargesCut() public {
+        Launcher fresh = new Launcher(address(token), address(nft), address(manager));
+        bytes32 goodSalt = _mine(fresh);
+        PoolKey memory strangerKey = key;
+        strangerKey.hooks = IHooks(_predict(address(fresh), goodSalt, fresh.initCodeHash()));
+        uint160 strangerPrice = Q96 * 2;
+        vm.prank(makeAddr("stranger"));
+        manager.initialize(strangerKey, strangerPrice);
+        liquidityRouter.modifyLiquidity{value: 2000 ether}(
+            strangerKey, ModifyLiquidityParams(-60000, 60000, int256(uint256(LIQUIDITY)), bytes32(0)), ""
+        );
+        Kiln adopted = fresh.open(goodSalt, Q96);
+        (uint160 price,,,) = manager.getSlot0(strangerKey.toId());
+        assertEq(price, strangerPrice, "open() cannot reprice a pool somebody else funded");
+        assertEq(manager.getLiquidity(strangerKey.toId()), LIQUIDITY);
+        vm.expectRevert(Launcher.AlreadyOpened.selector);
+        fresh.open(goodSalt, Q96);
+        vm.prank(trader, trader);
+        BalanceDelta delta = swapRouter.swap(
+            strangerKey,
+            SwapParams(false, -1 ether, TickMath.MAX_SQRT_PRICE - 1),
+            PoolSwapTest.TestSettings(false, false),
+            ""
+        );
+        assertEq(delta.amount1(), -1 ether);
+        assertGt(delta.amount0(), 0);
+        assertEq(adopted.claims(), 0.013 ether);
+        adopted.collect();
+        assertEq(adopted.reserve(), 0.013 ether);
+        assertEq(token.balanceOf(address(adopted)), 0.013 ether);
+        assertEq(manager.balanceOf(address(adopted), uint256(uint160(address(token)))), 0);
+    }
+
+    /// On an empty adopted pool the two modes that mint a specified cut in beforeSwap get a zero
+    /// fill and revert for any wallet below 21 pieces; a 21-piece wallet can use them to reprice.
+    function testEmptyAdoptedPoolSpecifiedCutModesRevertWithoutFullPass() public {
+        Launcher fresh = new Launcher(address(token), address(nft), address(manager));
+        bytes32 goodSalt = _mine(fresh);
+        PoolKey memory strangerKey = key;
+        strangerKey.hooks = IHooks(_predict(address(fresh), goodSalt, fresh.initCodeHash()));
+        vm.prank(makeAddr("stranger"));
+        manager.initialize(strangerKey, Q96);
+        Kiln adopted = fresh.open(goodSalt, Q96 / 4);
+        SwapParams memory ztoExactIn = SwapParams(false, -1 ether, Q96 * 2);
+        SwapParams memory ethExactOut = SwapParams(true, 1 ether, Q96 / 2);
+        uint256[3] memory counts = [uint256(0), 1, 4];
+        for (uint256 i; i < counts.length; ++i) {
+            uint256 snapshot = vm.snapshotState();
+            _mintPass(counts[i]);
+            bytes memory reason = abi.encodeWithSelector(
+                CustomRevert.WrappedError.selector,
+                address(adopted),
+                IHooks.afterSwap.selector,
+                abi.encodeWithSelector(Kiln.PartialSpecifiedSwap.selector),
+                abi.encodeWithSelector(Hooks.HookCallFailed.selector)
+            );
+            vm.prank(trader, trader);
+            vm.expectRevert(reason);
+            swapRouter.swap(strangerKey, ztoExactIn, PoolSwapTest.TestSettings(false, false), "");
+            vm.prank(trader, trader);
+            vm.expectRevert(reason);
+            swapRouter.swap{value: 1 ether}(strangerKey, ethExactOut, PoolSwapTest.TestSettings(false, false), "");
+            (uint160 price,,,) = manager.getSlot0(strangerKey.toId());
+            assertEq(price, Q96, "a reverted reprice leaves the price alone");
+            assertEq(adopted.claims(), 0, "a reverted reprice mints nothing");
+            assertTrue(vm.revertToStateAndDelete(snapshot));
+        }
+        _mintPass(21);
+        vm.prank(trader, trader);
+        BalanceDelta up = swapRouter.swap(strangerKey, ztoExactIn, PoolSwapTest.TestSettings(false, false), "");
+        assertEq(up.amount0(), 0);
+        assertEq(up.amount1(), 0);
+        (uint160 moved,,,) = manager.getSlot0(strangerKey.toId());
+        assertEq(moved, Q96 * 2);
+        vm.prank(trader, trader);
+        BalanceDelta down =
+            swapRouter.swap{value: 1 ether}(strangerKey, ethExactOut, PoolSwapTest.TestSettings(false, false), "");
+        assertEq(down.amount0(), 0);
+        assertEq(down.amount1(), 0);
+        (moved,,,) = manager.getSlot0(strangerKey.toId());
+        assertEq(moved, Q96 / 2);
+        assertEq(adopted.claims(), 0);
+        assertEq(trader.balance, 100_000 ether, "the router refunds unused ETH on a zero fill");
     }
 
     function testConstructorsWorkWithoutDependencyCodeAndDoNotValidateKilnBits() public {
